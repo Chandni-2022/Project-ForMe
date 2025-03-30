@@ -5,14 +5,20 @@ import os
 import json
 from PIL import Image
 import io
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
-# Create uploads folder if it doesn't exist
-UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+# Create necessary directories
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+INPUT_DIR = os.path.join(BASE_DIR, 'public', 'input')
+OUTPUT_DIR = os.path.join(BASE_DIR, 'public', 'output')
+UPLOAD_DIR = os.path.join(BASE_DIR, 'uploads')
+
+for directory in [INPUT_DIR, OUTPUT_DIR, UPLOAD_DIR]:
+    if not os.path.exists(directory):
+        os.makedirs(directory)
 
 def extract_form_fields(pdf_path):
     """Extract form fields and their positions from a PDF file."""
@@ -36,6 +42,41 @@ def extract_form_fields(pdf_path):
                         }
     return fields
 
+@app.route('/forms', methods=['GET'])
+def list_forms():
+    """List all available forms in the input directory."""
+    try:
+        forms = []
+        for filename in os.listdir(INPUT_DIR):
+            if filename.endswith('.pdf'):
+                form_id = os.path.splitext(filename)[0]
+                forms.append({
+                    'id': form_id,
+                    'name': filename,
+                    'url': f'/public/input/{filename}'
+                })
+        return jsonify({'forms': forms})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/completed-forms', methods=['GET'])
+def list_completed_forms():
+    """List all completed forms in the output directory."""
+    try:
+        forms = []
+        for filename in os.listdir(OUTPUT_DIR):
+            if filename.endswith('.pdf'):
+                file_path = os.path.join(OUTPUT_DIR, filename)
+                forms.append({
+                    'id': os.path.splitext(filename)[0],
+                    'name': filename,
+                    'url': f'/public/output/{filename}',
+                    'date': datetime.fromtimestamp(os.path.getmtime(file_path)).isoformat()
+                })
+        return jsonify({'forms': forms})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/upload', methods=['POST'])
 def upload_pdf():
     """Handle PDF file upload and extract form fields."""
@@ -50,11 +91,9 @@ def upload_pdf():
         return jsonify({'error': 'File must be a PDF'}), 400
 
     try:
-        # Save the uploaded file
-        filename = os.path.join(UPLOAD_FOLDER, file.filename)
+        filename = os.path.join(UPLOAD_DIR, file.filename)
         file.save(filename)
         
-        # Extract form fields
         fields = extract_form_fields(filename)
         
         return jsonify({
@@ -67,7 +106,7 @@ def upload_pdf():
 
 @app.route('/fill-pdf', methods=['POST'])
 def fill_pdf():
-    """Fill PDF form with provided data and return the filled PDF."""
+    """Fill PDF form with provided data and save to output directory."""
     try:
         data = request.json
         filename = data.get('filename')
@@ -76,25 +115,22 @@ def fill_pdf():
         if not filename:
             return jsonify({'error': 'No filename provided'}), 400
         
-        input_pdf_path = os.path.join(UPLOAD_FOLDER, filename)
+        input_pdf_path = os.path.join(UPLOAD_DIR, filename)
         if not os.path.exists(input_pdf_path):
             return jsonify({'error': 'PDF file not found'}), 404
         
-        output_filename = f'filled_{filename}'
-        output_pdf_path = os.path.join(UPLOAD_FOLDER, output_filename)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_filename = f'filled_{os.path.splitext(filename)[0]}_{timestamp}.pdf'
+        output_pdf_path = os.path.join(OUTPUT_DIR, output_filename)
         
-        # Fill the PDF form
         reader = PdfReader(input_pdf_path)
         writer = PdfWriter()
         
-        # Copy all pages
         for page in reader.pages:
             writer.add_page(page)
         
-        # Update form fields
         writer.update_page_form_field_values(writer.pages[0], field_data)
         
-        # Save the filled PDF
         with open(output_pdf_path, 'wb') as output_file:
             writer.write(output_file)
         
@@ -106,17 +142,14 @@ def fill_pdf():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/cleanup', methods=['POST'])
-def cleanup():
-    """Clean up temporary files."""
+@app.route('/public/<path:filename>')
+def serve_file(filename):
+    """Serve files from public directory."""
     try:
-        for filename in os.listdir(UPLOAD_FOLDER):
-            file_path = os.path.join(UPLOAD_FOLDER, filename)
-            if os.path.isfile(file_path):
-                os.remove(file_path)
-        return jsonify({'message': 'Cleanup successful'})
+        directory = INPUT_DIR if 'input' in filename else OUTPUT_DIR
+        return send_file(os.path.join(directory, os.path.basename(filename)))
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(e)}), 404
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
